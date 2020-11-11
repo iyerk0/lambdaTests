@@ -39,10 +39,10 @@ def populate_data(bucket, prefix, num_files, str_length):
         s3.put_object(Body=random_string, Bucket=bucket, Key=s3_key)
 
 
-def s3_lister(bucket, prefix, page_size=1000):
+def s3_lister(bucket, prefix, page_size=1000, num_items=500):
     paginator = s3.get_paginator('list_objects_v2')
     page_iterator = paginator.paginate(Bucket=bucket, Prefix=prefix,
-                                       PaginationConfig={'PageSize': page_size, 'MaxItems': 2000})
+                                       PaginationConfig={'PageSize': page_size, 'MaxItems': num_items})
     s3_objects = []
     for page in page_iterator:
         s3_objects.clear()
@@ -58,19 +58,19 @@ def copy_object(src_bucket, src_prefix, dest_bucket, dest_prefix, s3_key):
     s3.copy_object(Bucket=dest_bucket, Key=dest_key, CopySource={'Bucket': src_bucket, 'Key': s3_key})
 
 
-def copy_serial(src_bucket, src_prefix, dest_bucket, dest_prefix):
+def copy_serial(src_bucket, src_prefix, dest_bucket, dest_prefix, num_items):
     print("running in serial mode")
-    for s3_objects in s3_lister(src_bucket, src_prefix):
+    for s3_objects in s3_lister(src_bucket, src_prefix, num_items=num_items):
         for s3_key in s3_objects:
             copy_object(src_bucket, src_prefix, dest_bucket, dest_prefix, s3_key)
             # print(dest_key)
 
 
-def copy_parallel(src_bucket, src_prefix, dest_bucket, dest_prefix):
+def copy_parallel(src_bucket, src_prefix, dest_bucket, dest_prefix, num_items):
     print("running in parallel mode")
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
         futures = []
-        for s3_objects in s3_lister(src_bucket, src_prefix):
+        for s3_objects in s3_lister(src_bucket, src_prefix, num_items=num_items):
             for s3_key in s3_objects:
                 futures.append(
                     executor.submit(copy_object, src_bucket=src_bucket, src_prefix=src_prefix, dest_bucket=dest_bucket,
@@ -79,63 +79,73 @@ def copy_parallel(src_bucket, src_prefix, dest_bucket, dest_prefix):
         future.result()
 
 
-# async def copy_object_async(src_bucket, src_prefix, dest_bucket, dest_prefix, s3_key):
 async def copy_object_async(src_bucket, src_prefix, dest_bucket, dest_prefix, s3_key):
     s3_filename = s3_key[(s3_key.index('/') + 1):]
     dest_key = f"{dest_prefix}/{s3_filename}"
     async with aioboto3.client("s3") as s3_async:
-        print(f"begin copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
+        # print(f"begin copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
         task = await s3_async.copy_object(Bucket=dest_bucket,
                                           Key=dest_key,
                                           CopySource={'Bucket': src_bucket, 'Key': s3_key})
-        print(f"done copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
+        # print(f"done copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
 
     return task
 
-async def copy_async_parallel(src_bucket, src_prefix, dest_bucket, dest_prefix):
+
+async def copy_async_parallel(src_bucket, src_prefix, dest_bucket, dest_prefix, num_items):
     print("running in async with threads mode")
     loop = asyncio.get_running_loop()
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
-        for s3_objects in s3_lister(src_bucket, src_prefix, page_size=1000):
+        for s3_objects in s3_lister(src_bucket, src_prefix, num_items=num_items):
             for src_key in s3_objects:
-                results.append(await loop.run_in_executor(executor, copy_object_async, src_bucket, src_prefix, dest_bucket, dest_prefix, src_key))
-    print("before awaiting all results...")
-    await asyncio.gather(*results)
-    print("after awaiting all results...")
+                results.append(
+                    # loop.run_in_executor(executor, copy_object_async, src_bucket, src_prefix, dest_bucket, dest_prefix, src_key))
+                    loop.run_in_executor(executor, copy_object, src_bucket, src_prefix, dest_bucket, dest_prefix, src_key))
+    # print(f"before awaiting {len(results)} results...")
+    # await asyncio.gather(*results)
+    # print(f"after awaiting {len(results)} results...")
 
-async def copy_async(src_bucket, src_prefix, dest_bucket, dest_prefix):
-    # def copy_async(src_bucket, src_prefix, dest_bucket, dest_prefix):
+
+async def copy_async(src_bucket, src_prefix, dest_bucket, dest_prefix, num_items):
     print("running in async mode")
     tasks = []
-    # s3_async = aioboto3.client('s3')
-    # async with aioboto3.client("s3") as s3_async:
-    for s3_objects in s3_lister(src_bucket, src_prefix, page_size=1000):
-        # tasks = []
+    for s3_objects in s3_lister(src_bucket, src_prefix, num_items=num_items):
         for src_key in s3_objects:
             tasks.append(asyncio.create_task(copy_object_async(src_bucket, src_key, dest_bucket, dest_prefix, src_key)))
-            # tasks.append(copy_object_async(src_bucket, src_key, dest_bucket, dest_prefix, src_key, s3_async))
-            # asyncio.run(copy_object_async(src_bucket, src_key, dest_bucket, dest_prefix, src_key))
-    print("before awaiting all tasks...")
+    print(f"before awaiting {len(tasks)} tasks...")
     await asyncio.gather(*tasks)
-    print("after awaiting all tasks...")
+    print(f"after awaiting {len(tasks)} tasks...")
 
 
 def lambda_handler(event, context):
     print("Received event: " + json.dumps(event, indent=2))
-    bucket = event['bucket']
-    print("Got bucket: ", bucket)
-    # populate_data(bucket=bucket, prefix="data",num_files=1,str_length=1000)
-    time.perf_counter()
-    # copy_serial(src_bucket=bucket, src_prefix="data", dest_bucket=bucket, dest_prefix="new_data")
-    # copy_parallel(src_bucket=bucket, src_prefix="data", dest_bucket=bucket, dest_prefix="new_data")
-    asyncio.run(copy_async(src_bucket=bucket, src_prefix="data", dest_bucket=bucket, dest_prefix="new_data"))
-    # asyncio.get_event_loop().run_until_complete(copy_async(src_bucket=bucket, src_prefix="data", dest_bucket=bucket, dest_prefix="new_data"))
-    # copy_async(src_bucket=bucket, src_prefix="data", dest_bucket=bucket, dest_prefix="new_data")
-    # asyncio.run(copy_async_parallel(src_bucket=bucket, src_prefix="data", dest_bucket=bucket, dest_prefix="new_data"))
-    print("time taken: ", (time.perf_counter()))
     print("cpu count: ", os.cpu_count())
+    bucket = event['bucket']
+    mode = event['mode']
+    print("Got bucket: ", bucket)
+    print(f"running in {mode} mode")
+    num_items = event['num_items']
+    print(f"processing {num_items} items")
+    src_prefix = "data"
+    dest_prefix = "new_data"
+    # populate_data(bucket=bucket, prefix="data",num_files=1,str_length=1000)
+    start = time.time()
+    if mode == "serial":
+        copy_serial(src_bucket=bucket, src_prefix=src_prefix, dest_bucket=bucket, dest_prefix=dest_prefix,
+                    num_items=num_items)
+    elif mode == "parallel":
+        copy_parallel(src_bucket=bucket, src_prefix=src_prefix, dest_bucket=bucket, dest_prefix=dest_prefix,
+                      num_items=num_items)
+    elif mode == "async":
+        asyncio.run(copy_async(src_bucket=bucket, src_prefix=src_prefix, dest_bucket=bucket, dest_prefix=dest_prefix,
+                               num_items=num_items))
+    elif mode == "async-parallel":
+        asyncio.run(
+            copy_async_parallel(src_bucket=bucket, src_prefix=src_prefix, dest_bucket=bucket, dest_prefix=dest_prefix,
+                                num_items=num_items))
+    print("time taken: ", (time.time() - start))
 
 
 if __name__ == "__main__":
-    lambda_handler({'bucket': 'rndm-data'}, None)
+    lambda_handler({'bucket': 'rndm-data', 'mode': 'async-parallel', 'num_items': 500}, None)
