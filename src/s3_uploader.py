@@ -13,6 +13,8 @@ import asyncio
 import os
 import aioboto3
 import concurrent
+import threading
+import functools
 
 print('Loading function')
 
@@ -83,11 +85,11 @@ async def copy_object_async(src_bucket, src_prefix, dest_bucket, dest_prefix, s3
     s3_filename = s3_key[(s3_key.index('/') + 1):]
     dest_key = f"{dest_prefix}/{s3_filename}"
     async with aioboto3.client("s3") as s3_async:
-        # print(f"begin copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
+        # print(f"{threading.get_ident()}: begin copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
         task = await s3_async.copy_object(Bucket=dest_bucket,
                                           Key=dest_key,
                                           CopySource={'Bucket': src_bucket, 'Key': s3_key})
-        # print(f"done copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
+        # print(f"{threading.get_ident()}: done copying {src_bucket}/{s3_key} to {dest_bucket}/{dest_key}")
 
     return task
 
@@ -101,10 +103,47 @@ async def copy_async_parallel(src_bucket, src_prefix, dest_bucket, dest_prefix, 
             for src_key in s3_objects:
                 results.append(
                     # loop.run_in_executor(executor, copy_object_async, src_bucket, src_prefix, dest_bucket, dest_prefix, src_key))
-                    loop.run_in_executor(executor, copy_object, src_bucket, src_prefix, dest_bucket, dest_prefix, src_key))
-    # print(f"before awaiting {len(results)} results...")
-    # await asyncio.gather(*results)
-    # print(f"after awaiting {len(results)} results...")
+                    loop.run_in_executor(executor, copy_object, src_bucket, src_prefix, dest_bucket, dest_prefix,
+                                         src_key))
+    print(f"before awaiting {len(results)} results...")
+    await asyncio.gather(*results)
+    print(f"after awaiting {len(results)} results...")
+
+
+# from: https://stackoverflow.com/questions/46074841/why-coroutines-cannot-be-used-with-run-in-executor
+async def run_async(s3_objects, src_bucket, src_prefix, dest_bucket, dest_prefix):
+    tl_loop = None
+    try:
+        tl_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        print("Got runtime error, ignoring...")
+    print(f"{threading.get_ident()}: got running loop: {str(tl_loop)}")
+    if not tl_loop:
+        tl_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(tl_loop)
+        print(f"{threading.get_ident()}: made new running loop: {tl_loop}")
+    tasks = []
+    for s3_key in s3_objects:
+        tasks.append(
+            tl_loop.create_task(copy_object_async(src_bucket=src_bucket, src_prefix=src_prefix, dest_bucket=dest_bucket,
+                                                  dest_prefix=dest_prefix, s3_key=s3_key)))
+    await asyncio.gather(*tasks)
+
+def run_sync(s3_objects, src_bucket, src_prefix, dest_bucket, dest_prefix):
+    asyncio.run(run_async(s3_objects, src_bucket, src_prefix, dest_bucket, dest_prefix))
+
+async def copy_async_parallel2(src_bucket, src_prefix, dest_bucket, dest_prefix, num_items):
+    print("running in async with threads mode v2")
+    loop = asyncio.get_running_loop()
+    futures = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
+        for s3_objects in s3_lister(src_bucket, src_prefix, page_size=50, num_items=num_items):
+            # for src_key in s3_objects:
+            futures.append(
+                loop.run_in_executor(executor, run_sync, s3_objects, src_bucket, src_prefix, dest_bucket, dest_prefix))
+    print(f"before awaiting {len(futures)} futures...")
+    await asyncio.gather(*futures)
+    print(f"after awaiting {len(futures)} futures...")
 
 
 async def copy_async(src_bucket, src_prefix, dest_bucket, dest_prefix, num_items):
@@ -144,8 +183,12 @@ def lambda_handler(event, context):
         asyncio.run(
             copy_async_parallel(src_bucket=bucket, src_prefix=src_prefix, dest_bucket=bucket, dest_prefix=dest_prefix,
                                 num_items=num_items))
+    elif mode == "async-parallel2":
+        asyncio.run(
+            copy_async_parallel2(src_bucket=bucket, src_prefix=src_prefix, dest_bucket=bucket, dest_prefix=dest_prefix,
+                                 num_items=num_items))
     print("time taken: ", (time.time() - start))
 
 
 if __name__ == "__main__":
-    lambda_handler({'bucket': 'rndm-data', 'mode': 'async-parallel', 'num_items': 500}, None)
+    lambda_handler({'bucket': 'rndm-data', 'mode': 'async-parallel2', 'num_items': 2000}, None)
