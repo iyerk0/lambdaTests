@@ -1,7 +1,7 @@
 # lambda packaging
 # pip install --target dist -r requirements.txt
 # (cp src/s3_uploader.py dist/ && cd dist && zip -1 -r -u ../s3_uploader.zip ./*)
-# AWS_ACCESS_KEY_ID=xxx AWS_SECRET_ACCESS_KEY=xxx AWS_DEFAULT_REGION=us-east-1 aws lambda update-function-code --function-name s3Copier --zip-file fileb://s3_uploader.zip
+# AWS_ACCESS_KEY_ID=xxx AWS_SECRET_ACCESS_KEY=xxx AWS_DEFAULT_REGION=us-east-1 aws lambda update-function-code --function-name s3Copier --zip-file fileb://s3_uploader.zip --cli-connect-timeout 0
 
 import json
 import boto3
