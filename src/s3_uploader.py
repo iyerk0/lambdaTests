@@ -191,4 +191,4 @@ def lambda_handler(event, context):
 
 
 if __name__ == "__main__":
-    lambda_handler({'bucket': 'rndm-data', 'mode': 'async-parallel2', 'num_items': 2000}, None)
+    lambda_handler({'bucket': 'some-bucket', 'mode': 'async-parallel2', 'num_items': 2000}, None)
